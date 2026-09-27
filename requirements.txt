@@ -1,3 +1,4 @@
 reportlab
 pypdf
 watchdog
+python-dotenv
