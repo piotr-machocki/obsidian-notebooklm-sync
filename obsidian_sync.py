@@ -21,6 +21,7 @@ import re
 import argparse
 from pathlib import Path
 from datetime import datetime
+from dotenv import load_dotenv
 
 # PDF Libraries
 from reportlab.lib.pagesizes import A4
@@ -31,9 +32,21 @@ from pypdf import PdfWriter, PdfReader
 
 # ── CONFIGURE PATHS ───────────────────────────────────────────────────────────
 
-MAIN_VAULT = Path(".")
-NLM_VAULT = Path("NotebookLM_Vault")
-SCRIPT_DIR  = Path(__file__).parent.resolve()
+SCRIPT_DIR = Path(__file__).parent.resolve()
+
+load_dotenv(SCRIPT_DIR / ".env")
+
+main_vault_env = os.getenv("MAIN_VAULT")
+nlm_vault_env = os.getenv("NLM_VAULT")
+
+if not main_vault_env or not nlm_vault_env:
+    print("Error: MAIN_VAULT and NLM_VAULT must be configured in .env")
+    print("Copy .env.example to .env and set both paths.")
+    sys.exit(1)
+
+MAIN_VAULT = Path(main_vault_env)
+NLM_VAULT = Path(nlm_vault_env)
+
 STATE_FILE  = SCRIPT_DIR / ".synced_images.json"
 
 # Folders/files in the main vault root to ignore
