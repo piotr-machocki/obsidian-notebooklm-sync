@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .synced_images.json
 .env
+vaults.json
