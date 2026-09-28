@@ -1,0 +1,19 @@
+Copy vaults.example.json to vaults.json and replace the example paths with your own. If you only want to sync one vault, you can simply delete the other entries.
+
+[
+  {
+    "name": "MyVault1",
+    "main": "C:\\Path\\To\\Your\\Obsidian\\MyVault1",
+    "nlm": "C:\\Path\\To\\Your\\NotebookLM\\Folder"
+  },
+  {
+    "name": "MyVault2",
+    "main": "C:\\Path\\To\\Your\\Obsidian\\MyVault2",
+    "nlm": "C:\\Path\\To\\Your\\NotebookLM\\Folder"
+  },
+  {
+    "name": "MyVault3",
+    "main": "C:\\Path\\To\\Your\\Obsidian\\MyVault3",
+    "nlm": "C:\\Path\\To\\Your\\NotebookLM\\Folder"
+  }
+]
