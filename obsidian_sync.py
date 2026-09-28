@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Obsidian → NotebookLM Vault Sync (Unified Text, Structure, & Image PDF Sync)
+Obsidian → NotebookLM Vault Sync (Multi-Vault, Unified Text, Structure, & Image PDF Sync)
 
 Features:
   1. Merges Obsidian notes into topic-based Markdown files for NotebookLM.
   2. Generates Vault_Structure.md to map the original vault structure for AI queries.
-  3. Extracts embedded images (![[image.png]] / ![alt](image.png)), tracks synced 
-     images using .synced_images.json, and appends minimal multi-image PDFs per topic.
+  3. Extracts embedded images (![[image.png]] / ![alt](image.png)), tracks synced
+     images per-vault using .synced_images_<slug>.json, and appends minimal
+     multi-image PDFs per topic.
+  4. Supports any number of independent vault pairs, defined in vaults.json.
 
 Usage:
-    python obsidian_sync.py          # one-time sync
-    python obsidian_sync.py --watch  # auto-sync on file changes
+    python obsidian_sync.py          # one-time sync of every vault in vaults.json
+    python obsidian_sync.py --watch  # auto-sync all vaults on file changes
 """
 
 import os
@@ -21,7 +23,6 @@ import re
 import argparse
 from pathlib import Path
 from datetime import datetime
-from dotenv import load_dotenv
 
 # PDF Libraries
 from reportlab.lib.pagesizes import A4
@@ -34,41 +35,66 @@ from pypdf import PdfWriter, PdfReader
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 
-load_dotenv(SCRIPT_DIR / ".env")
+VAULTS_CONFIG_PATH = SCRIPT_DIR / "vaults.json"
 
-main_vault_env = os.getenv("MAIN_VAULT")
-nlm_vault_env = os.getenv("NLM_VAULT")
-
-if not main_vault_env or not nlm_vault_env:
-    print("Error: MAIN_VAULT and NLM_VAULT must be configured in .env")
-    print("Copy .env.example to .env and set both paths.")
-    sys.exit(1)
-
-MAIN_VAULT = Path(main_vault_env)
-NLM_VAULT = Path(nlm_vault_env)
-
-STATE_FILE  = SCRIPT_DIR / ".synced_images.json"
-
-# Folders/files in the main vault root to ignore
+# Folders/files in a vault root to ignore
 IGNORE = {".obsidian", ".trash", "templates", "attachments", ".git"}
 
 # Standalone .md files in the root to ignore (no extension needed)
 IGNORE_FILES = {"home"}
 
-# ── IMAGE STATE TRACKING ──────────────────────────────────────────────────────
 
-def load_synced_log() -> dict:
-    """Loads state tracking log from .synced_images.json."""
-    if STATE_FILE.exists():
+# ── VAULT CONFIG LOADING ──────────────────────────────────────────────────────
+
+def slugify(name: str) -> str:
+    """Turn a vault name into a filesystem-safe slug for its state file."""
+    return re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower()
+
+
+def load_vaults(config_path: Path) -> list[dict]:
+    """
+    Loads the list of vault pairs from vaults.json. Each entry becomes:
+        {"name": ..., "main": Path, "nlm": Path, "state_file": Path}
+    """
+    if not config_path.exists():
+        print(f"Error: vaults config not found at: {config_path}")
+        print("Copy vaults.json.example to vaults.json and fill in your vault paths.")
+        sys.exit(1)
+
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"Error: could not parse {config_path}: {e}")
+        sys.exit(1)
+
+    vaults = []
+    for entry in raw:
+        name = entry["name"]
+        vaults.append({
+            "name": name,
+            "main": Path(entry["main"]),
+            "nlm": Path(entry["nlm"]),
+            "state_file": SCRIPT_DIR / f".synced_images_{slugify(name)}.json",
+        })
+    return vaults
+
+
+# ── IMAGE STATE TRACKING (per vault) ─────────────────────────────────────────
+
+def load_synced_log(state_file: Path) -> dict:
+    """Loads state tracking log from a vault's own state file."""
+    if state_file.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            return json.loads(state_file.read_text(encoding="utf-8"))
         except Exception:
             return {}
     return {}
 
-def save_synced_log(log_data: dict):
-    """Saves updated state log to .synced_images.json."""
-    STATE_FILE.write_text(json.dumps(log_data, indent=2), encoding="utf-8")
+
+def save_synced_log(state_file: Path, log_data: dict):
+    """Saves updated state log to a vault's own state file."""
+    state_file.write_text(json.dumps(log_data, indent=2), encoding="utf-8")
+
 
 # ── SKELETON GENERATOR ────────────────────────────────────────────────────────
 
@@ -78,10 +104,10 @@ def generate_vault_skeleton(main_vault: Path, output_file: Path) -> None:
     Markdown file for AI-assisted note organization queries.
     """
     lines = ["# Obsidian Vault Directory Skeleton\n"]
-    
+
     for root, dirs, files in os.walk(main_vault):
         dirs[:] = [d for d in dirs if d not in IGNORE and not d.startswith('.')]
-        
+
         rel_path = Path(root).relative_to(main_vault)
         if rel_path == Path('.'):
             depth = 0
@@ -90,13 +116,14 @@ def generate_vault_skeleton(main_vault: Path, output_file: Path) -> None:
             depth = len(rel_path.parts)
             indent = "  " * depth
             lines.append(f"{indent}- **{rel_path.name}/**")
-            
+
         file_indent = "  " * (depth + 1)
         md_files = [f for f in files if f.endswith('.md')]
         for f in sorted(md_files):
             lines.append(f"{file_indent}- {f}")
-            
+
     output_file.write_text("\n".join(lines), encoding="utf-8")
+
 
 # ── IMAGE SYNC & PDF GENERATION ───────────────────────────────────────────────
 
@@ -193,7 +220,7 @@ def sync_images_for_topic(topic_folder: Path, main_vault: Path, nlm_vault: Path,
         main_vault / "attachments",
         main_vault
     ]
-    
+
     found_images = find_images_in_topic(topic_folder, main_vault)
     new_items = []
 
@@ -243,6 +270,7 @@ def sync_images_for_topic(topic_folder: Path, main_vault: Path, nlm_vault: Path,
 
     return True
 
+
 # ── HELPER FUNCTIONS ──────────────────────────────────────────────────────────
 
 def collect_files(folder: Path) -> list[Path]:
@@ -271,14 +299,16 @@ def build_merged(folder: Path) -> str:
     return divider.join(parts)
 
 
-def sync_once(main_vault: Path, nlm_vault: Path) -> dict[str, str]:
+# ── CORE SYNC (single vault) ──────────────────────────────────────────────────
+
+def sync_once(main_vault: Path, nlm_vault: Path, state_file: Path) -> dict[str, str]:
     """
-    Sync top-level folders, generate structural tree, and append new images to PDF sources.
-    Returns a dict of {topic_name: "created" | "updated" | "unchanged"}.
+    Sync top-level folders, generate structural tree, and append new images to
+    PDF sources — for ONE vault pair. Returns {topic_name: "created"|"updated"|"unchanged"}.
     """
     nlm_vault.mkdir(parents=True, exist_ok=True)
     results = {}
-    synced_log = load_synced_log()
+    synced_log = load_synced_log(state_file)
 
     # 1. Process top-level directories
     for item in main_vault.iterdir():
@@ -290,27 +320,21 @@ def sync_once(main_vault: Path, nlm_vault: Path) -> dict[str, str]:
                 results[item.name] = "empty (skipped)"
                 continue
 
-            # Process Markdown text
             if out_file.exists():
                 old = out_file.read_text(encoding="utf-8")
-                if old == content:
-                    status = "unchanged"
-                else:
-                    status = "updated"
+                status = "unchanged" if old == content else "updated"
             else:
                 status = "created"
 
             out_file.write_text(content, encoding="utf-8")
 
-            # Process Images into PDF for this topic
             img_added = sync_images_for_topic(item, main_vault, nlm_vault, synced_log)
             if img_added and status == "unchanged":
                 status = "updated (images added)"
 
             results[item.name] = status
 
-    # Save state log if images were updated
-    save_synced_log(synced_log)
+    save_synced_log(state_file, synced_log)
 
     # 2. Process standalone .md files in the root
     for item in main_vault.glob("*.md"):
@@ -335,14 +359,25 @@ def sync_once(main_vault: Path, nlm_vault: Path) -> dict[str, str]:
         out_file.write_text(content, encoding="utf-8")
         results[item.stem] = status
 
-    # 3. Generate Vault Structure Directory Map
+    # 3. Generate Vault Structure Directory Map (per vault)
     skeleton_path = nlm_vault / "Vault_Structure.md"
     generate_vault_skeleton(main_vault, skeleton_path)
 
     return results
 
 
-def print_results(results: dict[str, str]):
+def sync_all_vaults(vaults: list[dict]) -> dict[str, dict[str, str]]:
+    """Runs sync_once for every configured vault. Returns {vault_name: results}."""
+    all_results = {}
+    for v in vaults:
+        if not v["main"].exists():
+            print(f"  ! Skipping '{v['name']}': main vault not found at {v['main']}")
+            continue
+        all_results[v["name"]] = sync_once(v["main"], v["nlm"], v["state_file"])
+    return all_results
+
+
+def print_results(all_results: dict[str, dict[str, str]]):
     icons = {
         "created": "✚",
         "updated": "↺",
@@ -350,13 +385,16 @@ def print_results(results: dict[str, str]):
         "unchanged": "·",
         "empty (skipped)": "–"
     }
-    for topic, status in results.items():
-        icon = icons.get(status, "?")
-        print(f"  {icon} {topic} [{status}]")
+    for vault_name, results in all_results.items():
+        print(f"\n[{vault_name}]")
+        for topic, status in results.items():
+            icon = icons.get(status, "?")
+            print(f"  {icon} {topic} [{status}]")
 
-# ── WATCH MODE ────────────────────────────────────────────────────────────────
 
-def watch(main_vault: Path, nlm_vault: Path):
+# ── WATCH MODE (all vaults, one Observer) ─────────────────────────────────────
+
+def watch(vaults: list[dict]):
     try:
         from watchdog.observers import Observer
         from watchdog.events import FileSystemEventHandler
@@ -364,8 +402,10 @@ def watch(main_vault: Path, nlm_vault: Path):
         print("watchdog not installed. Run: pip install watchdog")
         sys.exit(1)
 
-    class SyncHandler(FileSystemEventHandler):
-        def __init__(self):
+    class VaultSyncHandler(FileSystemEventHandler):
+        """One handler per vault — only re-syncs the vault it's watching."""
+        def __init__(self, vault: dict):
+            self.vault = vault
             self.last_sync = 0
             self.cooldown = 2  # seconds debounce
 
@@ -379,22 +419,31 @@ def watch(main_vault: Path, nlm_vault: Path):
             if now - self.last_sync > self.cooldown:
                 self.last_sync = now
                 ts = datetime.now().strftime("%H:%M:%S")
-                print(f"\n[{ts}] Change detected ({event.event_type}: {path.name})")
-                res = sync_once(main_vault, nlm_vault)
-                print_results(res)
+                print(f"\n[{ts}] Change detected in '{self.vault['name']}' "
+                      f"({event.event_type}: {path.name})")
+                res = sync_once(self.vault["main"], self.vault["nlm"], self.vault["state_file"])
+                print_results({self.vault["name"]: res})
 
-    event_handler = SyncHandler()
     observer = Observer()
-    observer.schedule(event_handler, str(main_vault), recursive=True)
-    observer.start()
+    watched_any = False
+    for v in vaults:
+        if not v["main"].exists():
+            print(f"  ! Not watching '{v['name']}': main vault not found at {v['main']}")
+            continue
+        handler = VaultSyncHandler(v)
+        observer.schedule(handler, str(v["main"]), recursive=True)
+        print(f"Watching: {v['main']}  ->  {v['nlm']}   [{v['name']}]")
+        watched_any = True
 
-    print(f"Watching: {main_vault}")
-    print(f"Target:   {nlm_vault}")
+    if not watched_any:
+        print("No valid vaults to watch. Check vaults.json.")
+        sys.exit(1)
+
+    observer.start()
     print("Press Ctrl+C to stop.\n")
 
-    print("[Initial sync]")
-    res = sync_once(main_vault, nlm_vault)
-    print_results(res)
+    print("[Initial sync — all vaults]")
+    print_results(sync_all_vaults(vaults))
 
     try:
         while True:
@@ -404,26 +453,29 @@ def watch(main_vault: Path, nlm_vault: Path):
         print("\nStopped watcher.")
     observer.join()
 
+
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Sync Obsidian main vault → NotebookLM vault")
-    parser.add_argument("--watch", action="store_true", help="Watch for changes and auto-sync")
-    parser.add_argument("--main", type=Path, default=MAIN_VAULT, help="Path to main vault")
-    parser.add_argument("--nlm", type=Path, default=NLM_VAULT, help="Path to NotebookLM vault")
+    parser = argparse.ArgumentParser(
+        description="Sync Obsidian vaults → NotebookLM vaults (multi-vault)"
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch all configured vaults for changes"
+    )
     args = parser.parse_args()
 
-    if not args.main.exists():
-        print(f"Error: Main vault not found at: {args.main}")
-        sys.exit(1)
+    vaults = load_vaults(VAULTS_CONFIG_PATH)
 
     if args.watch:
-        watch(args.main, args.nlm)
+        watch(vaults)
     else:
-        print("Running one-time sync...")
-        res = sync_once(args.main, args.nlm)
-        print_results(res)
-        print("Done!")
+        print("Running one-time sync for all configured vaults...")
+        print_results(sync_all_vaults(vaults))
+        print("\nDone!")
+
 
 if __name__ == "__main__":
     main()
