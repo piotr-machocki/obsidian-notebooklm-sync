@@ -1,6 +1,16 @@
 .venv/
 __pycache__/
 *.pyc
-.synced_images.json
-.env
+
+# Personal config
 vaults.json
+
+# Runtime state
+.synced_images_*.json
+.doc_ids.json
+sync.log
+sync.log.*
+ 
+# Google OAuth secrets 
+credentials.json
+token.json
