@@ -10,7 +10,12 @@ vaults.json
 .doc_ids.json
 sync.log
 sync.log.*
+ACTION_NEEDED.md
  
 # Google OAuth secrets 
 credentials.json
 token.json
+
+# Optional
+
+Todo
