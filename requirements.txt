@@ -2,3 +2,4 @@ watchdog
 google-api-python-client
 google-auth-oauthlib
 Pillow
+win11toast
