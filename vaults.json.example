@@ -2,7 +2,6 @@ Copy `vaults.json.example` to `vaults.json` and replace the example paths with y
 
 If you only want to sync one vault, you can simply delete the other entries.
 
-```json
 [
   {
     "name": "MyVault1",
@@ -15,4 +14,3 @@ If you only want to sync one vault, you can simply delete the other entries.
     "drive_folder_id": "YOUR_GOOGLE_DRIVE_FOLDER_ID"
   }
 ]
-```
