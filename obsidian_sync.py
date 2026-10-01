@@ -17,6 +17,10 @@ Whenever a brand-new Doc is created (first run, or a size/count rollover),
 that Doc needs to be added as a NotebookLM source by hand — logged to
 sync.log AND appended to ACTION_NEEDED.md, since pythonw has no console.
 
+Only one sync process may run at a time (Windows named mutex). Two processes
+would interleave Doc body replacements (delete + insert are separate API
+calls) and race on .doc_ids.json.
+
 Usage:
     python obsidian_sync.py --auth   # one-time Google login (opens a browser)
     python obsidian_sync.py          # one-time sync of every vault
@@ -28,6 +32,7 @@ import sys
 import time
 import json
 import re
+import ctypes
 import argparse
 import logging
 import threading
@@ -60,6 +65,37 @@ if sys.stdout is not None:  # pythonw has no stdout
     logger.addHandler(logging.StreamHandler(sys.stdout))
 
 SYNC_LOCK = threading.Lock()
+
+
+# ── SINGLE INSTANCE ───────────────────────────────────────────────────────────
+
+_MUTEX_HANDLE = None  # module-level so the handle lives as long as the process
+
+
+def acquire_single_instance(name: str = "ObsidianNotebookLMSync") -> bool:
+    """
+    True if we're the only instance. Uses a Windows named mutex, which the OS
+    releases automatically when the process exits or crashes (no stale lock
+    file to clean up, nothing written into the synced Drive folder).
+    """
+    global _MUTEX_HANDLE
+    if sys.platform != "win32":
+        return True
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+
+    handle = kernel32.CreateMutexW(None, False, f"Local\\{name}")
+    if not handle:
+        logger.warning("Could not create instance mutex (error %s) - continuing without guard.",
+                       ctypes.get_last_error())
+        return True
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        return False
+
+    _MUTEX_HANDLE = handle
+    return True
 
 
 # ── VAULT CONFIG ──────────────────────────────────────────────────────────────
@@ -375,6 +411,11 @@ def main():
         get_credentials(interactive=True)
         logger.info("Authenticated. token.json saved — you can now run without --auth.")
         return
+
+    # Must come before anything that touches Docs or .doc_ids.json.
+    if not acquire_single_instance():
+        logger.error("Another obsidian_sync instance is already running - exiting.")
+        sys.exit(1)
 
     vaults = load_vaults(VAULTS_CONFIG_PATH)
 
